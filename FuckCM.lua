@@ -1669,6 +1669,7 @@ end
 
 local autoFarmPrepareKick
 local autoFarmOnKickTeleport
+local autoFarmBeforeKick
 
 local KickHandlers
 do
@@ -1820,13 +1821,24 @@ do
                     return nearKickZone() and ready()
                 end, 5)
             elseif ready() then
-                if autoFarmPrepareKick then
-                    pcall(autoFarmPrepareKick)
+                local handled = false
+                if autoFarmBeforeKick then
+                    local okHook, result = pcall(autoFarmBeforeKick)
+                    handled = okHook and result == true
                 end
-                if not startKick(id, kickGui) then
-                    waitFor(id, function() return false end, 1)
+                if handled then
+                    waitFor(id, function()
+                        return nearKickZone() and ready()
+                    end, 5)
                 else
-                    waitKickCycle(id)
+                    if autoFarmPrepareKick then
+                        pcall(autoFarmPrepareKick)
+                    end
+                    if not startKick(id, kickGui) then
+                        waitFor(id, function() return false end, 1)
+                    else
+                        waitKickCycle(id)
+                    end
                 end
             else
                 RunService.Heartbeat:Wait()
@@ -4051,6 +4063,14 @@ local function isFarmUmaAvailable(name, data)
     return farmAvailabilityByRarity[rarity]
 end
 
+local function getFarmLockText(name, data)
+    local rarity = getFarmUmaRarity(name, data)
+    if rarity and farmPoolNames[rarity] and farmPoolNames[rarity][name] then
+        return "POWER TOO LOW"
+    end
+    return "EVENT ONLY"
+end
+
 if farmEntities and farmEntities.Brainrots then
     local extraRarities = {}
     for name, data in pairs(farmEntities.Brainrots) do
@@ -4269,15 +4289,15 @@ end
 
 local rarityBar = newFrame({
     Name = "RarityFilters",
-    Position = UDim2.new(0, 12, 0, 38),
-    Size = UDim2.new(0.61, -12, 0, 22),
+    Position = UDim2.new(0, 12, 0, 34),
+    Size = UDim2.new(0.61, -12, 0, 26),
     BackgroundTransparency = 1,
     ZIndex = 21,
 }, autoFarmPanel)
 local mutationBar = newFrame({
     Name = "MutationFilters",
-    Position = UDim2.new(0, 12, 0, 64),
-    Size = UDim2.new(0.61, -12, 0, 22),
+    Position = UDim2.new(0, 12, 0, 62),
+    Size = UDim2.new(0.61, -12, 0, 26),
     BackgroundTransparency = 1,
     ZIndex = 21,
 }, autoFarmPanel)
@@ -4306,6 +4326,8 @@ farmCardScroll.Parent = autoFarmPanel
 local farmCardPadding = Instance.new("UIPadding")
 farmCardPadding.PaddingLeft = UDim.new(0, 10)
 farmCardPadding.PaddingTop = UDim.new(0, 4)
+farmCardPadding.PaddingRight = UDim.new(0, 8)
+farmCardPadding.PaddingBottom = UDim.new(0, 8)
 farmCardPadding.Parent = farmCardScroll
 local farmGrid = Instance.new("UIGridLayout")
 farmGrid.CellSize = UDim2.fromOffset(88, 96)
@@ -4341,9 +4363,15 @@ umaMutationGrid.CanvasSize = UDim2.new()
 umaMutationGrid.ZIndex = 22
 umaMutationGrid.Parent = farmMutationPane
 corner(8, umaMutationGrid)
+local umaMutationPadding = Instance.new("UIPadding")
+umaMutationPadding.PaddingLeft = UDim.new(0, 5)
+umaMutationPadding.PaddingRight = UDim.new(0, 5)
+umaMutationPadding.PaddingTop = UDim.new(0, 5)
+umaMutationPadding.PaddingBottom = UDim.new(0, 5)
+umaMutationPadding.Parent = umaMutationGrid
 local umaMutationLayout = Instance.new("UIGridLayout")
-umaMutationLayout.CellSize = UDim2.new(0.5, -4, 0, 25)
-umaMutationLayout.CellPadding = UDim2.fromOffset(4, 3)
+umaMutationLayout.CellSize = UDim2.new(0.5, -6, 0, 28)
+umaMutationLayout.CellPadding = UDim2.fromOffset(5, 5)
 umaMutationLayout.SortOrder = Enum.SortOrder.LayoutOrder
 umaMutationLayout.Parent = umaMutationGrid
 
@@ -4387,8 +4415,14 @@ local function buildFarmFilterRow(parent, values, stateMap, yOffset)
     layout.FillDirection = Enum.FillDirection.Horizontal
     layout.Padding = UDim.new(0, 5)
     layout.Parent = scroll
+    local rowPadding = Instance.new("UIPadding")
+    rowPadding.PaddingLeft = UDim.new(0, 3)
+    rowPadding.PaddingRight = UDim.new(0, 8)
+    rowPadding.PaddingTop = UDim.new(0, 2)
+    rowPadding.PaddingBottom = UDim.new(0, 2)
+    rowPadding.Parent = scroll
     for _, value in ipairs(values) do
-        local chip = makeFarmChip(scroll, value, UDim2.new(), UDim2.fromOffset(58, 20))
+        local chip = makeFarmChip(scroll, value, UDim2.new(), UDim2.fromOffset(66, 22))
         local chipText = chip:FindFirstChild("ChipText")
         if chipText then chipText.TextSize = 9 end
         chip.LayoutOrder = #scroll:GetChildren()
@@ -4578,7 +4612,7 @@ local function addFarmCard(name, data, rarity, order)
     }, card)
     corner(6, cover)
     local lockLabel = newLabel({
-        Text = farmPoolNames[rarity] and "POWER TOO LOW" or "EVENT ONLY",
+        Text = getFarmLockText(name, data),
         Size = UDim2.fromScale(1, 1),
         TextColor3 = Color3.fromRGB(165, 165, 170),
         Font = Enum.Font.GothamBold,
@@ -4597,12 +4631,27 @@ local function addFarmCard(name, data, rarity, order)
     })
 end
 
+local function farmEntryKey(name, data)
+    local text = tostring((data and data.DisplayName) or name)
+    return (string.lower(text):gsub("[^%w]", ""))
+end
+
 local allUmaEntries = {}
 if farmEntities and farmEntities.Brainrots then
+    local pooledKeys = {}
+    for name, data in pairs(farmEntities.Brainrots) do
+        local rarity = getFarmUmaRarity(name, data)
+        if rarity and farmPoolNames[rarity] and farmPoolNames[rarity][name] then
+            pooledKeys[farmEntryKey(name, data)] = true
+        end
+    end
     for name, data in pairs(farmEntities.Brainrots) do
         local rarity = getFarmUmaRarity(name, data)
         if rarity ~= "Exclusive" then
-            table.insert(allUmaEntries, { name = name, data = data, rarity = rarity })
+            local pooled = rarity and farmPoolNames[rarity] and farmPoolNames[rarity][name]
+            if pooled or not pooledKeys[farmEntryKey(name, data)] then
+                table.insert(allUmaEntries, { name = name, data = data, rarity = rarity })
+            end
         end
     end
 end
@@ -4705,8 +4754,7 @@ autoFarmRefresh = function()
         record.click.AutoButtonColor = record.availability
         local chosen = autoFarmTargets[record.name] ~= nil
         record.cover.Visible = not record.availability
-        record.lockLabel.Text = farmPoolNames[getFarmUmaRarity(record.name, record.data)]
-            and "POWER TOO LOW" or "EVENT ONLY"
+        record.lockLabel.Text = getFarmLockText(record.name, record.data)
         record.outline.Color = not record.availability and Color3.fromRGB(255, 28, 45)
             or (chosen and Color3.new(1, 1, 1) or CONFIG.AccentColor)
         record.outline.Transparency = not record.availability and 0.04
@@ -4914,9 +4962,11 @@ autoFarmStart = function()
         task.wait(0.2)
         return teleportToKick(true)
     end
-    autoFarmOnKickTeleport = function()
-        if not farmIsRunning() then return end
-        if baseVisitQueued then sellUnwantedAtBase() end
+    autoFarmBeforeKick = function()
+        if not farmIsRunning() or not baseVisitQueued then return false end
+        local visited = sellUnwantedAtBase()
+        if not visited then baseVisitQueued = false end
+        return visited == true
     end
     autoFarmPrepareKick = function()
         local currentPlan = getFarmPlan()
@@ -4941,6 +4991,7 @@ autoFarmStop = function()
     autoFarmStarted = false
     autoFarmPrepareKick = nil
     autoFarmOnKickTeleport = nil
+    autoFarmBeforeKick = nil
     for _, connection in ipairs(autoFarmInventoryConnections) do
         connection:Disconnect()
     end
